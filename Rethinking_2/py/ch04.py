@@ -2,9 +2,9 @@ import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pymc3 as pm
+import pymc as pm
 import scipy.stats as stats
-import seaborn as sns
+#import seaborn as sns
 
 from scipy.interpolate import griddata
 
@@ -209,3 +209,51 @@ def probatx(x=50,trace=trace_df,data=d2):
     plt.show()
     return(mu_at_x)
 mux=probatx()
+
+
+d = pd.read_csv("../Data/Howell1.csv",sep=';',header=0)
+
+d2 = d.loc[d.age >= 18, :]
+
+def traceit2(data=d2):
+    xbar = data.weight.mean()
+    with pm.Model() as lm:
+        alpha = pm.Normal("alpha", mu=178, sigma=20)
+        beta = pm.LogNormal("beta", mu=1,  sigma=1)
+        sigma = pm.Uniform("sigma", lower=0, upper=50)
+        mu = pm.Deterministic("mu",alpha + beta * (data.weight - xbar))
+        height = pm.Normal("height", mu=mu, sd=sigma, observed=data.height)
+        trace = pm.sample(1000, tune=1000)
+    return(trace)
+
+y = traceit2(d2)
+
+def foo():
+    N = [10, 50, 150, 352][0]
+    dN = d2[:N]
+    with pm.Model() as m_N:
+        a = pm.Normal("a", mu=178, sigma=100)
+        b = pm.Lognormal("b", mu=0, sigma=1)
+        sigma = pm.Uniform("sigma", lower=0, upper=50)
+        mu = pm.Deterministic("mu", a + b * (dN.weight.to_numpy() - dN.weight.mean()))
+        height = pm.Normal("height", mu=mu, sigma=sigma, observed=dN.height)
+        trace_N = pm.sample(1000, tune=1000)
+    return(trace_N)
+foo()
+
+
+
+def poly(data=d):
+    data["weight_s"] = (data.weight - data.weight.mean())/data.weight.std()
+    data["weight_s2"] = data.weight_s**2
+    with pm.Model() as poly_height:
+        a = pm.Normal("a", mu=178, sigma=20)
+        b1 = pm.LogNormal("b1", mu=1, sigma=1)
+        b2 = pm.Normal("b2", mu=0, sigma=1)
+        mu = pm.Deterministic("mu", a + b1*d.weight_s.values + b2*d.weight_s2.values)
+        sigma = pm.Uniform("s", lower=0, upper=50)
+        height = pm.Normal("height", mu=mu, sigma=sigma, observed=data.height)
+        trace = pm.sample(1_000, tune=1_000)
+    return(trace)
+
+y=poly(d)
