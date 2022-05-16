@@ -2,7 +2,7 @@ import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pymc as pm
+import pymc3 as pm
 import scipy.stats as stats
 #import seaborn as sns
 
@@ -221,7 +221,8 @@ def traceit2(data=d2):
         alpha = pm.Normal("alpha", mu=178, sigma=20)
         beta = pm.LogNormal("beta", mu=1,  sigma=1)
         sigma = pm.Uniform("sigma", lower=0, upper=50)
-        mu = pm.Deterministic("mu",alpha + beta * (data.weight - xbar))
+        #mu = pm.Deterministic("mu",alpha + beta * (data.weight - xbar))
+        mu = alpha + beta * (data.weight - xbar)
         height = pm.Normal("height", mu=mu, sd=sigma, observed=data.height)
         trace = pm.sample(1000, tune=1000)
     return(trace)
@@ -250,10 +251,124 @@ def poly(data=d):
         a = pm.Normal("a", mu=178, sigma=20)
         b1 = pm.LogNormal("b1", mu=1, sigma=1)
         b2 = pm.Normal("b2", mu=0, sigma=1)
-        mu = pm.Deterministic("mu", a + b1*d.weight_s.values + b2*d.weight_s2.values)
+        #mu = pm.Deterministic("mu", a + b1*d.weight_s.values + b2*d.weight_s2.values)
+        mu = a + b1*d.weight_s.values + b2*d.weight_s2.values
         sigma = pm.Uniform("s", lower=0, upper=50)
         height = pm.Normal("height", mu=mu, sigma=sigma, observed=data.height)
         trace = pm.sample(1_000, tune=1_000)
-    return(trace)
+
+        #height_pred = pm.sample_posterior_predictive(trace, 200, poly_height)
+    return(trace, poly_height)
+
+#return(trace)
+#mu_pred = poly(d)
 
 y=poly(d)
+az.summary(y,round_to=2,kind="stats")
+
+
+def polyplot(data=d, fit=y):
+    trace_df = pm.trace_to_dataframe(fit[0])
+    N = trace_df.shape[0]
+
+    weight = np.linspace(-2.2, 2, N)
+    weight_s, weight_s2 = weight, weight**2
+
+    mu = trace_df.a.values.reshape(-1,1) + \
+         trace_df.b1.values.reshape(-1,1)*weight_s + \
+         trace_df.b2.values.reshape(-1,1)*weight_s2
+
+    mu_mean = mu.mean(axis=0)
+    mu_PI = np.quantile(mu,q=[0.055,0.945],axis=0)
+
+
+    ypp = pm.sample_posterior_predictive(fit[0],20,fit[1])
+
+    plt.plot(d.weight_s, d.height,'o', alpha=0.1,label="data")
+    az.plot_hdi(d.weight_s,ypp["height"])#,label="post pred")
+    plt.fill_between(weight_s, mu_PI[0], mu_PI[1], alpha=0.2, label="mean PI")
+    plt.plot(weight_s, mu_mean, label="mean")
+    plt.legend()
+    plt.show()
+
+
+polyplot(d,y)
+
+
+def poly2(data=d):
+    data["weight_s3"] = data.weight_s**3
+
+    with pm.Model() as poly2_model:
+        a = pm.Normal("a", mu=178, sigma=20)
+        b1 = pm.LogNormal("b1", mu=1, sigma=1)
+        b2 = pm.Normal("b2", mu=0, sigma=1)
+        b3 = pm.Normal("b3", mu=0, sigma=1)
+        sigma = pm.Uniform("sigma", lower=0, upper=50)
+        #mu = a + b1*d.weight_s + b2*d.weight_s2 + b3*d.weight_s3
+        mu = pm.Deterministic("mu",a + b1*d.weight_s + b2*d.weight_s2 + b3*d.weight_s3)
+
+        height = pm.Normal("height",mu=mu,sigma=sigma,observed=data.height)
+        trace = pm.sample(1_000, tune=1_000)
+    return(trace,poly2_model)
+
+y = poly2(d)
+
+
+def plotpoly2(data=d,fit=y):
+    mu_pred = fit[0].mu
+    ypp = pm.sample_posterior_predictive(fit[0],20,fit[1])
+
+    ax = az.plot_hdi(d.weight_s, mu_pred)
+    az.plot_hdi(d.weight_s, ypp["height"], ax=ax)
+    plt.scatter(data.weight_s, data.height, alpha=0.1)
+    plt.show()
+plotpoly2(d,y)
+
+d = pd.read_csv("../Data/cherry_blossoms.csv")
+summ = az.summary(d.dropna().to_dict(orient="list"), kind="stats")
+d2 = d.dropna(subset=["doy"])
+
+from patsy import dmatrix
+def bs_wrap(data=d2, num_knots=15):
+    data=d2
+    num_knots=15
+    knot_list = np.quantile(data.year, np.linspace(0,1,num_knots))
+
+
+    B = dmatrix(
+        "bs(year, knots=knots,degree=3,include_intercept=True)-1",
+        {"year": data.year.values, "knots": knot_list[1:-1]},
+    )
+    return(B)
+B=bs_wrap(d2,15)
+
+def basis_plot(B,w=np.ones(shape=(17,))):
+    _, ax = plt.subplots(1,1)
+    for i in range(17):
+        ax.plot(d2.year, (w[i]*B[:,i]), color="C0")
+    ax.set_xlabel("year")
+    ax.set_ylabel("basis")
+    plt.show()
+    return(ax)
+
+basis_plot(B)
+
+def bs_model(data=d2,B=B):
+    with pm.Model() as bs_fit:
+        a = pm.Normal("a",mu=100,sigma=10)
+        w = pm.Normal("w",mu=0, sigma=10, shape=B.shape[1])
+        mu = pm.Deterministic("mu", a + pm.math.dot(np.asarray(B.base, order="F"), w.T))
+        sigma = pm.Exponential("sigma",1)
+        D = pm.Normal("D",mu=mu,sigma=sigma,observed=data.doy)
+        trace=pm.sample(1_000)
+    return(trace,bs_fit)
+y = bs_model(d2,B)
+
+wp = y[0].w.mean(axis=0)
+ax=basis_plot(B,wp)
+
+def bs_plot(d2,B,y):
+    ax = az.plot_hdi(d2.year, y[0].mu, color="k")
+    ax.plot(d2.year, d2.doy, "o", alpha=0.3)
+    plt.show()
+bs_plot(d2,B,y)
